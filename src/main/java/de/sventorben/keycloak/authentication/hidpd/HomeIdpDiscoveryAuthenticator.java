@@ -3,9 +3,11 @@ package de.sventorben.keycloak.authentication.hidpd;
 import jakarta.ws.rs.core.MultivaluedMap;
 import jakarta.ws.rs.core.Response;
 import org.jboss.logging.Logger;
+import org.keycloak.WebAuthnConstants;
 import org.keycloak.authentication.AuthenticationFlowContext;
 import org.keycloak.authentication.AuthenticationFlowError;
 import org.keycloak.authentication.authenticators.browser.AbstractUsernameFormAuthenticator;
+import org.keycloak.authentication.authenticators.browser.WebAuthnConditionalUIAuthenticator;
 import org.keycloak.events.Details;
 import org.keycloak.events.Errors;
 import org.keycloak.forms.login.LoginFormsProvider;
@@ -13,6 +15,7 @@ import org.keycloak.models.IdentityProviderModel;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.RealmModel;
 import org.keycloak.models.UserModel;
+import org.keycloak.models.credential.WebAuthnCredentialModel;
 import org.keycloak.services.managers.AuthenticationManager;
 
 import java.util.List;
@@ -25,8 +28,18 @@ final class HomeIdpDiscoveryAuthenticator extends AbstractUsernameFormAuthentica
 
     private final AbstractHomeIdpDiscoveryAuthenticatorFactory.DiscovererConfig discovererConfig;
 
-    HomeIdpDiscoveryAuthenticator(AbstractHomeIdpDiscoveryAuthenticatorFactory.DiscovererConfig discovererConfig) {
+    private final WebAuthnConditionalUIAuthenticator passkeys;
+
+    HomeIdpDiscoveryAuthenticator(KeycloakSession session,
+                                 AbstractHomeIdpDiscoveryAuthenticatorFactory.DiscovererConfig discovererConfig) {
+        this(discovererConfig, new WebAuthnConditionalUIAuthenticator(session,
+            context -> context.form().createLoginUsername()));
+    }
+
+    HomeIdpDiscoveryAuthenticator(AbstractHomeIdpDiscoveryAuthenticatorFactory.DiscovererConfig discovererConfig,
+                                 WebAuthnConditionalUIAuthenticator passkeys) {
         this.discovererConfig = discovererConfig;
+        this.passkeys = passkeys;
     }
 
     @Override
@@ -56,7 +69,16 @@ final class HomeIdpDiscoveryAuthenticator extends AbstractUsernameFormAuthentica
                 }
             }
         }
+        preparePasskeys(authenticationFlowContext);
         context.authenticationChallenge().forceChallenge();
+    }
+
+    private void preparePasskeys(AuthenticationFlowContext context) {
+        UserModel user = context.getUser();
+        if (passkeys.isPasskeysEnabled() && (user == null ||
+                user.credentialManager().isConfiguredFor(WebAuthnCredentialModel.TYPE_PASSWORDLESS))) {
+            passkeys.fillContextForm(context);
+        }
     }
 
     private String usernameHint(AuthenticationFlowContext authenticationFlowContext, HomeIdpAuthenticationFlowContext context) {
@@ -83,6 +105,14 @@ final class HomeIdpDiscoveryAuthenticator extends AbstractUsernameFormAuthentica
         if (formData.containsKey("cancel")) {
             LOG.debugf("Login canceled");
             authenticationFlowContext.cancelLogin();
+            return;
+        }
+
+        if (passkeys.isPasskeysEnabled() && (formData.containsKey(WebAuthnConstants.AUTHENTICATOR_DATA)
+                || formData.containsKey(WebAuthnConstants.ERROR))) {
+            // A discoverable credential identifies the user: no email/discovery is needed.
+            // Keep the original challenge intact and let Keycloak verify the assertion.
+            passkeys.action(authenticationFlowContext);
             return;
         }
 
@@ -122,6 +152,7 @@ final class HomeIdpDiscoveryAuthenticator extends AbstractUsernameFormAuthentica
         if (username == null) {
             LOG.warn("No or empty username found in request");
             context.getEvent().error(Errors.USER_NOT_FOUND);
+            preparePasskeys(context);
             Response challengeResponse = challenge(context, getDefaultChallengeMessage(context), FIELD_USERNAME);
             context.failureChallenge(AuthenticationFlowError.INVALID_USER, challengeResponse);
             return null;
