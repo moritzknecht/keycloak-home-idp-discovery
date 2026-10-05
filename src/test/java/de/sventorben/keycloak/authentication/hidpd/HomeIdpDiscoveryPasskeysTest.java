@@ -167,6 +167,31 @@ class HomeIdpDiscoveryPasskeysTest {
         verify(context, never()).success();
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"", "saved-password", " "})
+    void discoveryOnlyHandsOffANonemptyPasswordWithinTheRequest(String password) {
+        stubReauthentication();
+        KeycloakSession session = context.getSession();
+        HomeIdpDiscoverer discoverer = mock(HomeIdpDiscoverer.class);
+        doReturn(discoverer).when(session).getProvider(eq(HomeIdpDiscoverer.class), nullable(String.class));
+        given(discoverer.discoverForUser(context, "user@example.com")).willReturn(List.of());
+        MultivaluedHashMap<String, String> form = new MultivaluedHashMap<>();
+        form.putSingle("username", " user@example.com ");
+        form.putSingle("password", password);
+        given(context.getHttpRequest().getDecodedFormParameters()).willReturn(form);
+
+        authenticator.action(context);
+
+        verify(context).attempted();
+        verify(context, never()).success(anyString());
+        if (password.isEmpty()) {
+            verify(session, never()).setAttribute(eq(AutofillUsernamePasswordForm.DISCOVERED_USERNAME), any());
+        } else {
+            verify(session).setAttribute(AutofillUsernamePasswordForm.DISCOVERED_USERNAME, "user@example.com");
+        }
+        verify(context.getAuthenticationSession(), never()).setAuthNote(anyString(), eq(password));
+    }
+
     @Test
     void emptyEmailRedisplaysTheEmailFormWithAFreshPasskeyChallenge() {
         stubReauthentication();

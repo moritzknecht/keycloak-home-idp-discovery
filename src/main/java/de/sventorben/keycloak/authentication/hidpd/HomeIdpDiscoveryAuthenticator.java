@@ -20,6 +20,7 @@ import org.keycloak.services.managers.AuthenticationManager;
 
 import java.util.List;
 
+import static org.keycloak.services.validation.Validation.FIELD_PASSWORD;
 import static org.keycloak.services.validation.Validation.FIELD_USERNAME;
 
 final class HomeIdpDiscoveryAuthenticator extends AbstractUsernameFormAuthenticator {
@@ -137,6 +138,12 @@ final class HomeIdpDiscoveryAuthenticator extends AbstractUsernameFormAuthentica
         rememberMe.handleAction(formData);
         rememberMe.remember(username);
         if (homeIdps.isEmpty()) {
+            String password = formData.getFirst(FIELD_PASSWORD);
+            if (password != null && !password.isEmpty()) {
+                // Hand off only the discovered username, within this request. Never persist passwords.
+                authenticationFlowContext.getSession().setAttribute(
+                    AutofillUsernamePasswordForm.DISCOVERED_USERNAME, username);
+            }
             authenticationFlowContext.attempted();
             if (!rememberMe.isOn(formData)) {
                 context.loginHint().setInAuthSession(username);
